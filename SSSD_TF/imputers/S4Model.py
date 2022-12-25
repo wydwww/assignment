@@ -296,3 +296,39 @@ def rank_correction(measure, N, rank=1, dtype=tf.float32):
     if rank > d:
         P = tf.experimental.numpy.concatenate([P, tf.zeros(rank-d, N, dtype=dtype)], dim=0) # (rank N)
     return P
+
+def nplr(measure, N, rank=1, dtype=tf.float32):
+    """ Return w, p, q, V, B such that
+    (w - p q^*, B) is unitarily equivalent to the original HiPPO A, B by the matrix V
+    i.e. A = V[w - p q^*]V^*, B = V B
+    """
+    assert dtype == tf.float32 or tf.complex64
+    if measure == 'random':
+        dtype = tf.complex64 if dtype == tf.float32 else tf.complex128
+        # w = torch.randn(N//2, dtype=dtype)
+        w = -tf.experimental.numpy.exp(tf.experimental.numpy.random.randn(N//2)) + 1j*tf.experimental.numpy.random.randn(N//2)
+        P = tf.experimental.numpy.random.randn(rank, N//2, dtype=dtype)
+        B = tf.experimental.numpy.random.randn(N//2, dtype=dtype)
+        V = tf.eye(N, dtype=dtype)[..., :N//2] # Only used in testing
+        return w, P, B, V
+
+    A, B = transition(measure, N)
+    A = tf.cast(A, dtype=dtype) # (N, N)
+    B = tf.cast(B, dtype=dtype)[:, 0] # (N,)
+
+    P = rank_correction(measure, N, rank=rank, dtype=dtype)
+    AP = A + tf.experimental.numpy.sum(tf.expand_dims(P, -2)*tf.expand_dims(P, -1), axis=-3)
+    w, V = tf.linalg.eig(AP) # (..., N) (..., N, N)
+    # V w V^{-1} = A
+
+    # Only keep one of the conjugate pairs
+    w = tf.experimental.numpy.ascontiguousarray(w[..., 0::2])
+    V = tf.experimental.numpy.ascontiguousarray(V[..., 0::2])
+
+    V_inv = tf.experimental.numpy.transpose(tf.experimental.numpy.conj(V), (1, 0))
+
+    B = contract('ij, j -> i', V_inv, tf.cast(B, dtype=V.dtype)) # V^* B
+    P = contract('ij, ...j -> ...i', V_inv, tf.cast(P, dtype=V.dtype)) # V^* P
+
+
+    return w, P, B, V
