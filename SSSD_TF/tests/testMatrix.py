@@ -1,8 +1,10 @@
 import sys
 sys.path.insert(1, '/data/3glusterfs/home/yiding/sssd')
 
-from SSSD.src.imputers.S4Model import power as torchpower
+from SSSD.src.imputers.S4Model import power as torch_power
 from SSSD_TF.imputers.S4Model import power
+from SSSD.src.imputers.S4Model import rank_correction as torch_rank_correction
+from SSSD_TF.imputers.S4Model import rank_correction
 
 import torch
 import torch.nn as nn
@@ -14,7 +16,7 @@ class TorchTest(nn.Module):
         super(TorchTest, self).__init__()
 
     def forward(self, L, A):
-        return torchpower(L, A)
+        return torch_power(L, A)
 
 class TFTest(tf.keras.Model):
     def __init__(self):
@@ -35,6 +37,17 @@ def check_error(pt_output, tf_output, epsilon=1e-5):
     return error
 
 if __name__ == '__main__':
+
+    print("Testing rank_correction():")
+    rank_correction_res1 = torch_rank_correction('legs', 64)
+    rank_correction_res2 = rank_correction('legs', 64)
+    print(rank_correction_res1)
+    print(rank_correction_res2)
+    # Error: 4.479395314092927e-06
+    # Pass
+    check_error(rank_correction_res1, rank_correction_res2)
+
+    print("Testing power():")
     model = TorchTest()
     model.eval()
 
@@ -47,7 +60,6 @@ if __name__ == '__main__':
 
     L = 100
 
-    print("Testing power():")
     output = model(L, input_pt)
     print(output.size())
     # print(output)

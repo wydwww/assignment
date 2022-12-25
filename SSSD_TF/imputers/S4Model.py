@@ -271,7 +271,7 @@ def rank_correction(measure, N, rank=1, dtype=tf.float32):
 
     if measure == 'legs':
         assert rank >= 1
-        P = tf.experimental.numpy.sqrt(.5+tf.experimental.numpy.arange(N, dtype=dtype)).expand_dims(0) # (1 N)
+        P = tf.expand_dims(tf.experimental.numpy.sqrt(.5+tf.experimental.numpy.arange(N, dtype=dtype)), 0) # (1 N)
     elif measure == 'legt':
         assert rank >= 2
         P = tf.experimental.numpy.sqrt(1+2*tf.experimental.numpy.arange(N, dtype=dtype)) # (N)
@@ -292,7 +292,7 @@ def rank_correction(measure, N, rank=1, dtype=tf.float32):
         P = tf.experimental.numpy.stack([P0, P1], dim=0) # (2 N)
     else: raise NotImplementedError
 
-    d = P.size(0)
+    d = P.shape[0]
     if rank > d:
         P = tf.experimental.numpy.concatenate([P, tf.zeros(rank-d, N, dtype=dtype)], dim=0) # (rank N)
     return P
