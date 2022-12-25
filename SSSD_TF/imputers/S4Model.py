@@ -150,6 +150,10 @@ def LinearActivation(
 
 # yiding: Skip krylov()
 
+# yiding: Test done
+# self.L=100
+# self.dA.size()=torch.Size([512, 64, 64])
+# dA_L.size()=torch.Size([512, 64, 64])
 def power(L, A, v=None):
     """ Compute A^L and the scan sum_i A^i v_i
 
@@ -157,8 +161,8 @@ def power(L, A, v=None):
     v: (..., N, L)
     """
 
-    # yiding: Does .to(A) work in TensorFlow?
-    I = tf.eye(A.shape[-1]).to(A) # , dtype=A.dtype, device=A.device)
+    # yiding: Does .to(A) work in TensorFlow? No. Use tf.cast() instead.
+    I = tf.cast(tf.eye(A.shape[-1]), dtype=A.dtype) # , dtype=A.dtype, device=A.device)
 
     powers = [A]
     l = 1
