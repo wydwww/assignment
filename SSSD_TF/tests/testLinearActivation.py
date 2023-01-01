@@ -42,7 +42,11 @@ if __name__ == '__main__':
     output2 = model2(input_tf)
     print(output2.shape)
 
+    print("Testing the output value of transposed LinearActivation():")
     output_transposed = model(input_pt.transpose(2, 1), transposed=True)
     print(output_transposed.size())
     output2_transposed = model2(tf.transpose(input_tf, perm=[0, 2, 1]), transposed=True)
     print(output2_transposed.shape)
+
+    # print(output_transposed)
+    # print(output2_transposed)

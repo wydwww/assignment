@@ -73,7 +73,7 @@ def Activation(activation=None, dim=-1):
     elif activation == 'relu':
         return tf.nn.relu()
     elif activation == 'gelu':
-        return tf.nn.gelu()
+        return tf.nn.gelu
     elif activation in ['swish', 'silu']:
         return tf.nn.silu()
     elif activation == 'sigmoid':
@@ -115,8 +115,10 @@ class TransposedLinear(tf.keras.layers.Layer):
     def __init__(self, d_input, d_output, bias=True):
         super().__init__()
 
-        self.weight = tf.Variable(tf.experimental.numpy.empty([d_output, d_input]), trainable=True)
-        tf.keras.initializers.HeUniform(self.weight) # yiding: TensorFlow does not have an `a` argument
+        init = tf.keras.initializers.HeUniform()
+        self.weight = tf.Variable(
+            init(shape=(d_output, d_input), dtype=tf.float32))
+        # tf.keras.initializers.HeUniform(self.weight) # yiding: TensorFlow does not have an `a` argument
 
         if bias:
             bound = 1 / math.sqrt(d_input)
@@ -127,7 +129,7 @@ class TransposedLinear(tf.keras.layers.Layer):
             self.bias = 0.0
     
     def call(self, x):
-        return contract('... u l, v u -> ... v l', x, self.weight) + self.bias
+        return tf.convert_to_tensor(contract('... u l, v u -> ... v l', x.numpy(), self.weight.numpy())) + self.bias
 
 # yiding: Test done
 def LinearActivation(
@@ -406,7 +408,7 @@ class SSKernelNPLR(tf.keras.layers.Layer):
 
         # Multiply C by I - dA_L
         C_ = _conj(C)
-        prod = contract("h m n, c h n -> c h m", tf.transpose(dA_L, perm=[0,2,1]), C_)
+        prod = contract("h m n, c h n -> c h m", tf.transpose(dA_L, perm=[0, 2, 1]), C_)
         if double_length: prod = -prod # Multiply by I + dA_L instead
         C_ = C_ - prod
         C_ = C_[..., :self.N] # Take conjugate pairs again
@@ -907,3 +909,171 @@ class HippoSSKernel(tf.keras.layers.Layer):
 
     def default_state(self, *args, **kwargs):
         return self.kernel.default_state(*args, **kwargs)
+
+# yiding: Skip get_torch_trans() since it is not used in the code.
+
+class S4(tf.keras.layers.Layer):
+
+    def __init__(
+            self,
+            d_model,
+            d_state=64,
+            l_max=1, # Maximum length of sequence. Fine if not provided: the kernel will keep doubling in length until longer than sequence. However, this can be marginally slower if the true length is not a power of 2
+            channels=1, # maps 1-dim to C-dim
+            bidirectional=False,
+            # Arguments for FF
+            activation='gelu', # activation in between SS and FF
+            postact=None, # activation after FF
+            initializer=None, # initializer on FF
+            weight_norm=False, # weight normalization on FF
+            hyper_act=None, # Use a "hypernetwork" multiplication
+            dropout=0.0,
+            transposed=True, # axis ordering (B, L, D) or (B, D, L)
+            verbose=False,
+            # SSM Kernel arguments
+            **kernel_args,
+        ):
+
+
+        """
+        d_state: the dimension of the state, also denoted by N
+        l_max: the maximum sequence length, also denoted by L
+          if this is not known at model creation, set l_max=1
+        channels: can be interpreted as a number of "heads"
+        bidirectional: bidirectional
+        dropout: standard dropout argument
+        transposed: choose backbone axis ordering of (B, L, H) or (B, H, L) [B=batch size, L=sequence length, H=hidden dimension]
+
+        Other options are all experimental and should not need to be configured
+        """
+
+
+        super().__init__()
+        if verbose:
+            log.info(f"Constructing S4 (H, N, L) = ({d_model}, {d_state}, {l_max})")
+
+        self.h = d_model
+        self.n = d_state
+        self.bidirectional = bidirectional
+        self.channels = channels
+        self.transposed = transposed
+
+        # optional multiplicative modulation GLU-style
+        # https://arxiv.org/abs/2002.05202
+        self.hyper = hyper_act is not None
+        if self.hyper:
+            channels *= 2
+            self.hyper_activation = Activation(hyper_act)
+
+        self.D = tf.Variable(tf.experimental.numpy.random.randn(channels, self.h))
+
+        if self.bidirectional:
+            channels *= 2
+
+
+        # SSM Kernel
+        self.kernel = HippoSSKernel(self.h, N=self.n, L=l_max, channels=channels, verbose=verbose, **kernel_args)
+
+        # Pointwise
+        self.activation = Activation(activation)
+        dropout_fn = tf.keras.layers.SpatialDropout2D if self.transposed else tf.keras.layers.Dropout
+        self.dropout = dropout_fn(dropout) if dropout > 0.0 else tf.identity
+
+        
+        # position-wise output transform to mix features
+        self.output_linear = LinearActivation(
+            self.h*self.channels,
+            self.h,
+            transposed=self.transposed,
+            initializer=initializer,
+            activation=postact,
+            activate=True,
+            weight_norm=weight_norm,
+        )        
+        
+        
+
+    def call(self, u, **kwargs): # absorbs return_output and transformer src mask
+        """
+        u: (B H L) if self.transposed else (B L H)
+        state: (H N) never needed unless you know what you're doing
+
+        Returns: same shape as u
+        """
+        if not self.transposed:
+            u = tf.experimental.numpy.transpose(u, [0, 2, 1])
+        L = u.shape[-1]
+
+        # Compute SS Kernel
+        k = self.kernel(L=L) # (C H L) (B C H L)
+
+        # Convolution
+        if self.bidirectional:
+            k0, k1 = rearrange(k, '(s c) h l -> s c h l', s=2)
+            k = tf.pad(k0, [[0, 0], [0, 0], [0, L]]) \
+                    + tf.pad(tf.experimental.numpy.flip(k1, -1), [[0, 0], [0, 0], [L, 0]]) \
+        
+        k_f = tf.signal.rfft(k, fft_length=tf.constant([2*L])) # (C H L)
+        u_f = tf.signal.rfft(u, fft_length=tf.constant([2*L])) # (B H L)
+        y_f = tf.convert_to_tensor(contract('bhl,chl->bchl', u_f.numpy(), k_f.numpy())) # k_f.unsqueeze(-4) * u_f.unsqueeze(-3) # (B C H L)
+        y = tf.signal.irfft(y_f, fft_length=tf.constant([2*L]))[..., :L] # (B C H L)
+
+
+        # Compute D term in state space equation - essentially a skip connection
+        y = y + tf.convert_to_tensor(contract('bhl,ch->bchl', u.numpy(), self.D.numpy())) # u.unsqueeze(-3) * self.D.unsqueeze(-1)
+
+        # Optional hyper-network multiplication
+        if self.hyper:
+            y, yh = rearrange(y, 'b (s c) h l -> s b c h l', s=2)
+            y = self.hyper_activation(yh) * y
+
+        # Reshape to flatten channels
+        y = rearrange(y, '... c h l -> ... (c h) l')
+
+        y = self.dropout(self.activation(y))
+
+        if not self.transposed:
+            y = tf.experimental.numpy.transpose(y, [0, 2, 1])
+
+        y = self.output_linear(y)
+
+        # ysize = b, k, l, requieres l, b, k 
+        #y = self.time_transformer(y.permute(2,0,1)).permute(1,2,0)
+            
+            
+        return y, None
+        
+
+    def step(self, u, state):
+        """ Step one time step as a recurrent model. Intended to be used during validation.
+
+        u: (B H)
+        state: (B H N)
+        Returns: output (B H), state (B H N)
+        """
+        assert not self.training
+
+        y, next_state = self.kernel.step(u, state) # (B C H)
+        y = y + tf.expand_dims(u, -2) * self.D
+        y = rearrange(y, '... c h -> ... (c h)')
+        y = self.activation(y)
+        if self.transposed:
+            y = tf.squeeze(self.output_linear(tf.expand_dims(y, -1)), -1)
+        else:
+            y = self.output_linear(y)
+        return y, next_state
+
+    def default_state(self, *batch_shape, device=None):
+        return self.kernel.default_state(*batch_shape)
+
+    @property
+    def d_state(self):
+        return self.h * self.n
+
+    @property
+    def d_output(self):
+        return self.h
+
+    @property
+    def state_to_tensor(self):
+        return lambda state: rearrange('... h n -> ... (h n)', state)
