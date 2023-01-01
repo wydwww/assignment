@@ -1077,3 +1077,24 @@ class S4(tf.keras.layers.Layer):
     @property
     def state_to_tensor(self):
         return lambda state: rearrange('... h n -> ... (h n)', state)
+
+class S4Layer(tf.keras.layers.Layer):
+    #S4 Layer that can be used as a drop-in replacement for a TransformerEncoder
+    def __init__(self, features, lmax, N=64, dropout=0.0, bidirectional=True, layer_norm=True):
+        super().__init__()
+        self.s4_layer  = S4(d_model=features, 
+                            d_state=N, 
+                            l_max=lmax, 
+                            bidirectional=bidirectional)
+        
+        self.norm_layer = tf.keras.layers.LayerNormalization() if layer_norm else lambda x: tf.identity(x) 
+        self.dropout = tf.keras.layers.SpatialDropout2D(rate=dropout) if dropout>0 else lambda x: tf.identity(x)
+    
+    def call(self, x):
+        #x has shape seq, batch, feature
+        x = tf.transpose(x, [1, 2, 0]) #batch, feature, seq (as expected from S4 with transposed=True)
+        xout, _ = self.s4_layer(x) #batch, feature, seq
+        xout = self.dropout(xout)
+        xout = xout + x # skip connection   # batch, feature, seq
+        xout = tf.transpose(xout, [2, 0, 1]) # seq, batch, feature
+        return self.norm_layer(xout)

@@ -4,6 +4,9 @@ sys.path.insert(1, '/data/3glusterfs/home/yiding/sssd')
 from SSSD.src.imputers.S4Model import S4 as TorchS4
 from SSSD_TF.imputers.S4Model import S4
 
+from SSSD.src.imputers.S4Model import S4Layer as TorchS4Layer
+from SSSD_TF.imputers.S4Model import S4Layer
+
 import torch
 import torch.nn as nn
 import tensorflow as tf
@@ -69,3 +72,31 @@ if __name__ == '__main__':
     # The output shapes of S4 in PyTorch and TensorFlow are the same.
     # print(output_pt)
     # print(output_tf)
+
+
+    print("Testing S4Layer:")
+    # 2*self.res_channels=512, s4_lmax=100, s4_d_state=64, s4_dropout=0.0, s4_bidirectional=1, s4_layernorm=1
+
+    TestS4LayerPT = TorchS4Layer(features=512,
+                                lmax=100,
+                                N=64,
+                                dropout=0.0,
+                                bidirectional=1)
+    TestS4LayerPT.eval()
+
+    output_s4_pt = TestS4LayerPT(input_pt)
+
+    TestS4LayerTF = S4Layer(features=512, 
+                            lmax=100, 
+                            N=64, 
+                            dropout=0.0, 
+                            bidirectional=1)
+    TestS4LayerTF.trainable = False
+
+    output_s4_tf = TestS4LayerTF(input_tf)
+
+    print(output_s4_pt.shape) # torch.Size([1, 500, 512])
+    print(output_s4_tf.shape) # (1, 500, 512)
+
+    # print(output_s4_pt)
+    # print(output_s4_tf)
