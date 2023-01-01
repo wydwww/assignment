@@ -47,7 +47,7 @@ log = get_logger(__name__)
 
 # yiding: Skip pykeops
 
-# yiding: To be tested
+# yiding: Tested
 _c2r = lambda x: tf.constant([list(a) for a in zip(tf.math.real(x).numpy(), tf.math.imag(x).numpy())])
 _r2c = lambda x: tf.dtypes.complex(tf.constant([i[0].numpy() for i in x]), tf.constant([i[1].numpy() for i in x]))
 _conj = lambda x: tf.experimental.numpy.concatenate([x, tf.math.conj(x)], axis=-1)
@@ -206,13 +206,13 @@ def power(L, A, v=None):
 
     # Take care of edge case for non-po2 arrays
     # Note that this initial step is a no-op for the case of power of 2 (l == L)
-    k = v.size(-1) - l
+    k = v.shape[-1] - l
     v_ = powers.pop() @ v[..., l:]
     v = v[..., :l]
     v[..., :k] = v[..., :k] + v_
 
     # Handle reduction for power of 2
-    while v.size(-1) > 1:
+    while v.shape[-1] > 1:
         v = rearrange(v, '... (z l) -> ... z l', z=2)
         v = v[..., 0, :] + powers.pop() @ v[..., 1, :]
     return I, v.squeeze(-1)
@@ -416,7 +416,7 @@ class SSKernelNPLR(tf.keras.layers.Layer):
             self.L *= 2
             self._omega(self.L, dtype=C.dtype, cache=True)
 
-    # yiding: How to handle device?
+    # yiding: Igonre device argument.
     def _omega(self, L, dtype, cache=True):
         """ Calculate (and cache) FFT nodes and their "unprocessed" them with the bilinear transform
         This should be called everytime the internal length self.L changes """
@@ -654,7 +654,7 @@ class SSKernelNPLR(tf.keras.layers.Layer):
         # Prepare Linear stepping
         dt = tf.experimental.numpy.exp(self.log_dt)
         D = tf.math.reciprocal((2.0 / tf.expand_dims(dt, -1)) - w)  # (H, N)
-        R = (tf.eye(self.rank, dtype=w.dtype) + 2*tf.math.real(contract('r h n, h n, s h n -> h r s', Q, D, P))) # (H r r)
+        R = (tf.eye(self.rank, dtype=w.dtype) + 2*tf.math.real(tf.convert_to_tensor(contract('r h n, h n, s h n -> h r s', Q.numpy(), D.numpy(), P.numpy())))) # (H r r)
         Q_D = rearrange(Q*D, 'r h n -> h r n')
         R = tf.linalg.solve(tf.cast(R, dtype=Q_D.dtype), Q_D) # (H r N)
         R = rearrange(R, 'h r n -> r h n')
@@ -689,7 +689,7 @@ class SSKernelNPLR(tf.keras.layers.Layer):
         step_params = self.step_params.copy()
         if state.shape[-1] == self.N: # Only store half of the conjugate pairs; should be true by default
             # There should be a slightly faster way using conjugate symmetry
-            contract_fn = lambda p, x, y: contract('r h n, r h m, ... h m -> ... h n', _conj(p), _conj(x), _conj(y))[..., :self.N] # inner outer product
+            contract_fn = lambda p, x, y: tf.convert_to_tensor(contract('r h n, r h m, ... h m -> ... h n', _conj(p).numpy(), _conj(x).numpy(), _conj(y).numpy()))[..., :self.N] # inner outer product
         else:
             assert state.shape[-1] == 2*self.N
             step_params = {k: _conj(v) for k, v in step_params.items()}
@@ -821,7 +821,7 @@ class SSKernelNPLR(tf.keras.layers.Layer):
         y = self.output_contraction(self.dC, new_state)
         return y, new_state
 
-    # yiding: Not sure if this works.
+    # yiding: Alternative in TensorFlow.
     def register(self, name, tensor, trainable=False, lr=None, wd=None):
         """Utility method: register a tensor as a buffer or trainable parameter"""
 
@@ -837,3 +837,73 @@ class SSKernelNPLR(tf.keras.layers.Layer):
         #     optim["weight_decay"] = wd
         # if len(optim) > 0:
         #     setattr(getattr(self, name), "_optim", optim)
+
+class HippoSSKernel(tf.keras.layers.Layer):
+  
+    """Wrapper around SSKernel that generates A, B, C, dt according to HiPPO arguments.
+
+    The SSKernel is expected to support the interface
+    forward()
+    default_state()
+    setup_step()
+    step()
+    """
+
+    def __init__(
+        self,
+        H,
+        N=64,
+        L=1,
+        measure="legs",
+        rank=1,
+        channels=1, # 1-dim to C-dim map; can think of C as having separate "heads"
+        dt_min=0.001,
+        dt_max=0.1,
+        trainable=None, # Dictionary of options to train various HiPPO parameters
+        lr=None, # Hook to set LR of hippo parameters differently
+        length_correction=True, # Multiply by I-A|^L after initialization; can be turned off for initialization speed
+        hurwitz=False,
+        tie_state=False, # Tie parameters of HiPPO ODE across the H features
+        precision=1, # 1 (single) or 2 (double) for the kernel
+        resample=False,  # If given inputs of different lengths, adjust the sampling rate. Note that L should always be provided in this case, as it assumes that L is the true underlying length of the continuous signal
+        verbose=False,
+    ):
+        super().__init__()
+        self.N = N
+        self.H = H
+        L = L or 1
+        self.precision = precision
+        dtype = tf.double if self.precision == 2 else tf.float32
+        cdtype = tf.complex64 if dtype == tf.float32 else tf.complex128
+        self.rate = None if resample else 1.0
+        self.channels = channels
+
+        # Generate dt
+        log_dt = tf.experimental.numpy.random.randn(self.H) * (
+            math.log(dt_max) - math.log(dt_min)
+        ) + math.log(dt_min)
+        log_dt = tf.cast(log_dt, tf.float32)
+        w, p, B, _ = nplr(measure, self.N, rank, dtype=dtype)
+        C = tf.experimental.numpy.random.randn(channels, self.H, self.N // 2)
+        C = tf.cast(C, tf.complex64)
+        self.kernel = SSKernelNPLR(
+            L, w, p, B, C,
+            log_dt,
+            hurwitz=hurwitz,
+            trainable=trainable,
+            lr=lr,
+            tie_state=tie_state,
+            length_correction=length_correction,
+            verbose=verbose,
+        )
+
+    def call(self, L=None):
+        k, _ = self.kernel(state=None, rate=self.rate, L=L)
+        return tf.cast(k, tf.float32)
+
+    def step(self, u, state, **kwargs):
+        u, state = self.kernel.step(u, state, **kwargs)
+        return tf.cast(u, tf.float32), state
+
+    def default_state(self, *args, **kwargs):
+        return self.kernel.default_state(*args, **kwargs)

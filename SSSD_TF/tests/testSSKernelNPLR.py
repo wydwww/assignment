@@ -7,6 +7,8 @@ from SSSD_TF.imputers.S4Model import SSKernelNPLR
 from SSSD.src.imputers.S4Model import nplr as torch_nplr
 from SSSD_TF.imputers.S4Model import nplr
 
+from SSSD_TF.imputers.S4Model import HippoSSKernel
+
 import torch
 import torch.nn as nn
 import tensorflow as tf
@@ -87,7 +89,6 @@ def check_error(pt_output, tf_output, epsilon=1e-5):
 
 if __name__ == '__main__':
 
-    print("Testing SSKernelNPLR in PyTorch:")
     dt_max = 0.1
     dt_min = 0.001
     measure = 'legs'
@@ -106,9 +107,9 @@ if __name__ == '__main__':
     model.eval()
 
     output = model(L)
-    # print(output.size()) # torch.Size([2, 512, 100])
+    print("Testing SSKernelNPLR's output shape in PyTorch:")
+    print(output.size()) # torch.Size([2, 512, 100])
 
-    print("Testing SSKernelNPLR in TensorFlow:")
     log_dt_tf = tf.experimental.numpy.random.rand(H) * (
             math.log(dt_max) - math.log(dt_min)
         ) + math.log(dt_min)
@@ -121,6 +122,12 @@ if __name__ == '__main__':
     model_tf.trainable = False
 
     output_tf = model_tf(L)
-    # print(output_tf.shape) # (2, 512, 100)
+    print("Testing SSKernelNPLR's output shape in TensorFlow:")
+    print(output_tf.shape) # (2, 512, 100)
 
     # The output shapes of NPLR in PyTorch and TensorFlow are the same.
+
+    hkernal = HippoSSKernel(H, N, L, channels=channels, verbose=False)
+    output_tf_h = hkernal(L)
+    print("Testing HippoSSKernel's output shape in TensorFlow:")
+    print(output_tf_h.shape) # (2, 512, 100)
