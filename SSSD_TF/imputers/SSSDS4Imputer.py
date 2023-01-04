@@ -89,3 +89,52 @@ class Residual_block(tf.keras.Model):
         skip = self.skip_conv(out)
 
         return (x + res) * math.sqrt(0.5), skip  # normalize for training stability
+
+class Residual_group(tf.keras.Model):
+    def __init__(self, res_channels, skip_channels, num_res_layers, 
+                 diffusion_step_embed_dim_in, 
+                 diffusion_step_embed_dim_mid,
+                 diffusion_step_embed_dim_out,
+                 in_channels,
+                 s4_lmax,
+                 s4_d_state,
+                 s4_dropout,
+                 s4_bidirectional,
+                 s4_layernorm):
+        super(Residual_group, self).__init__()
+        self.num_res_layers = num_res_layers
+        self.diffusion_step_embed_dim_in = diffusion_step_embed_dim_in
+
+        self.fc_t1 = tf.keras.layers.Dense(diffusion_step_embed_dim_mid)
+        self.fc_t2 = tf.keras.layers.Dense(diffusion_step_embed_dim_out)
+        
+        self.residual_blocks = []
+        for n in range(self.num_res_layers):
+            self.residual_blocks.append(
+                Residual_block(
+                    res_channels, 
+                    skip_channels, 
+                    diffusion_step_embed_dim_out=diffusion_step_embed_dim_out,
+                    in_channels=in_channels,
+                    s4_lmax=s4_lmax,
+                    s4_d_state=s4_d_state,
+                    s4_dropout=s4_dropout,
+                    s4_bidirectional=s4_bidirectional,
+                    s4_layernorm=s4_layernorm))
+
+            
+    def call(self, input_data):
+        noise, conditional, diffusion_steps = input_data
+
+        diffusion_step_embed = calc_diffusion_step_embedding(diffusion_steps, self.diffusion_step_embed_dim_in)
+        diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
+        diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
+
+        h = noise
+        skip = 0
+        for n in range(self.num_res_layers):
+            residual_layer = self.residual_blocks[n]
+            h, skip_n = residual_layer((h, conditional, diffusion_step_embed))  
+            skip += skip_n  
+
+        return skip * math.sqrt(1.0 / self.num_res_layers)
