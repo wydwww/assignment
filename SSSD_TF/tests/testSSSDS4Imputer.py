@@ -1,175 +1,62 @@
 import sys
 sys.path.insert(1, '/data/3glusterfs/home/yiding/sssd')
 
-from SSSD.src.imputers.SSSDS4Imputer import Conv as TorchConv
-from SSSD.src.imputers.SSSDS4Imputer import ZeroConv1d as TorchZeroConv1d
-from SSSD.src.imputers.SSSDS4Imputer import Residual_block as TorchResidual_block
-from SSSD.src.imputers.SSSDS4Imputer import Residual_group as TorchResidual_group
-from SSSD_TF.imputers.SSSDS4Imputer import Conv, ZeroConv1d, Residual_block, Residual_group
+from SSSD.src.imputers.SSSDS4Imputer import SSSDS4Imputer as TorchSSSDS4Imputer
+from SSSD_TF.imputers.SSSDS4Imputer import SSSDS4Imputer
 
 import torch
 import torch.nn as nn
 import tensorflow as tf
-import tensorflow_addons as tfa
 import numpy as np
 
 if __name__ == '__main__':
-    in_channels = 256
-    out_channels = 512
-    kernel_size = 3
+    model_config = {
+        "in_channels": 14, 
+        "out_channels":14,
+        "num_res_layers": 36,
+        "res_channels": 256, 
+        "skip_channels": 256,
+        "diffusion_step_embed_dim_in": 128,
+        "diffusion_step_embed_dim_mid": 512,
+        "diffusion_step_embed_dim_out": 512,
+        "s4_lmax": 100,
+        "s4_d_state":64,
+        "s4_dropout":0.0,
+        "s4_bidirectional":1,
+        "s4_layernorm":1
+    }
 
-    print("Testing Conv:")
-
-    model_pt = TorchConv(in_channels, out_channels, kernel_size=kernel_size)
+    model_pt = TorchSSSDS4Imputer(**model_config).cuda()
     model_pt.eval()
+    # transformed_X.shape=torch.Size([50, 14, 100]), cond.shape=torch.Size([50, 14, 100]), mask.shape=torch.Size([50, 14, 100]), diffusion_steps.view(B, 1).shape=torch.Size([50, 1])
+    transformed_X_np = np.random.uniform(-1, 1, (50, 14, 100))
+    transformed_X_pt = torch.Tensor(transformed_X_np).cuda()
+    cond_np = np.random.uniform(0, 3, (50, 14, 100))
+    cond_pt = torch.Tensor(cond_np).cuda()
+    mask_np = np.random.choice([0, 1], size=(50, 14, 100), p=[0.1, 0.9])
+    mask_pt = torch.Tensor(mask_np).cuda()
+    diffusion_steps_np = np.random.randint(0, 200, (50, 1))
+    diffusion_steps_pt = torch.Tensor(diffusion_steps_np).cuda()
+    
+    epsilon_theta_pt = model_pt(
+        (transformed_X_pt, cond_pt, mask_pt, diffusion_steps_pt,))
 
-    input_np = np.random.uniform(0, 1, (500, 256, 100))
-    input_pt = torch.Tensor(input_np)
-    print(f"{input_pt.shape=}")
-    input_tf = tf.convert_to_tensor(input_np)
-    print(f"{input_tf.shape=}")
+    print(f"{epsilon_theta_pt.shape=}") # torch.Size([50, 14, 100])
 
-    output_pt = model_pt(input_pt)
-    print(f"{output_pt.shape=}")
+    model_tf = SSSDS4Imputer(**model_config)
+    model_tf.trainable = False
 
-    model_tf = Conv(in_channels, out_channels, kernel_size=kernel_size)
-    output_tf = model_tf(input_tf)
-    print(f"{output_tf.shape=}")
+    transformed_X_tf = tf.convert_to_tensor(transformed_X_np, dtype=tf.float32)
+    cond_tf = tf.convert_to_tensor(cond_np, dtype=tf.float32)
+    mask_tf = tf.convert_to_tensor(mask_np, dtype=tf.float32)
+    diffusion_steps_tf = tf.convert_to_tensor(diffusion_steps_np, dtype=tf.int32)
 
-    # print(output_pt)
-    # print(output_tf)
-    # Sanity check passed.
+    epsilon_theta_tf = model_tf(
+        (transformed_X_tf, cond_tf, mask_tf, diffusion_steps_tf,))
 
-    print("Testing ZeroConv1d:")
+    print(f"{epsilon_theta_tf.shape=}") # TensorShape([50, 14, 100])
 
-    model_pt = TorchZeroConv1d(in_channels, out_channels)
-    model_pt.eval()
-
-    model_tf = ZeroConv1d(in_channels, out_channels)
-
-    output_pt = model_pt(input_pt)
-    print(f"{output_pt.shape=}")
-
-    output_tf = model_tf(input_tf)
-    print(f"{output_tf.shape=}")
-
-    # print(output_pt)
-    # print(output_tf)
-    # Both are all zeros.
-
-print("Testing Residual_block:")
-
-# Initialize models
-res_channels=256
-skip_channels=256
-diffusion_step_embed_dim_out=512
-in_channels=14
-s4_lmax=100
-s4_d_state=64
-s4_dropout=0.0
-s4_bidirectional=1
-s4_layernorm=1
-
-model_pt = TorchResidual_block(res_channels, skip_channels, 
-                            diffusion_step_embed_dim_out=diffusion_step_embed_dim_out,
-                            in_channels=in_channels,
-                            s4_lmax=s4_lmax,
-                            s4_d_state=s4_d_state,
-                            s4_dropout=s4_dropout,
-                            s4_bidirectional=s4_bidirectional,
-                            s4_layernorm=s4_layernorm)
-model_pt.eval()
-
-model_tf = Residual_block(res_channels, skip_channels, 
-                            diffusion_step_embed_dim_out=diffusion_step_embed_dim_out,
-                            in_channels=in_channels,
-                            s4_lmax=s4_lmax,
-                            s4_d_state=s4_d_state,
-                            s4_dropout=s4_dropout,
-                            s4_bidirectional=s4_bidirectional,
-                            s4_layernorm=s4_layernorm)
-model_tf.trainable = False
-
-# h.shape=torch.Size([500, 256, 100]), conditional.shape=torch.Size([500, 28, 100]), diffusion_step_embed.shape=torch.Size([500, 512])
-# Initialize inputs
-
-h_np = np.random.uniform(0, 1, (500, 256, 100))
-h_pt = torch.Tensor(h_np)
-h_tf = tf.convert_to_tensor(h_np)
-
-conditional_np = np.random.uniform(0, 1, (500, 28, 100))
-conditional_pt = torch.Tensor(conditional_np)
-conditional_tf = tf.convert_to_tensor(conditional_np)
-
-diffusion_step_embed_np = np.random.uniform(0, 1, (500, 512))
-diffusion_step_embed_pt = torch.Tensor(diffusion_step_embed_np)
-diffusion_step_embed_tf = tf.convert_to_tensor(diffusion_step_embed_np)
-
-output_h_pt, skip_n_pt = model_pt((h_pt, conditional_pt, diffusion_step_embed_pt))
-print(f"{output_h_pt.shape=}")
-print(f"{skip_n_pt.shape=}")
-
-output_h_tf, skip_n_tf = model_tf((h_tf, conditional_tf, diffusion_step_embed_tf))
-print(f"{output_h_tf.shape=}")
-print(f"{skip_n_tf.shape=}")
-
-print("Testing Residual_group:")
-
-res_channels=256
-skip_channels=256
-num_res_layers=36
-diffusion_step_embed_dim_in=128
-diffusion_step_embed_dim_mid=512
-diffusion_step_embed_dim_out=512
-in_channels=14
-s4_lmax=100
-s4_d_state=64
-s4_dropout=0.0
-s4_bidirectional=1
-s4_layernorm=1
-
-group_pt = TorchResidual_group(
-               res_channels=res_channels, 
-               skip_channels=skip_channels, 
-               num_res_layers=num_res_layers, 
-               diffusion_step_embed_dim_in=diffusion_step_embed_dim_in,
-               diffusion_step_embed_dim_mid=diffusion_step_embed_dim_mid,
-               diffusion_step_embed_dim_out=diffusion_step_embed_dim_out,
-               in_channels=in_channels,
-               s4_lmax=s4_lmax,
-               s4_d_state=s4_d_state,
-               s4_dropout=s4_dropout,
-               s4_bidirectional=s4_bidirectional,
-               s4_layernorm=s4_layernorm)
-
-group_pt.eval()
-
-diffusion_step_embed = np.random.uniform(0, 1, (500, 1))
-diffusion_step_embed_pt = torch.Tensor(diffusion_step_embed)
-diffusion_step_embed_tf = tf.convert_to_tensor(diffusion_step_embed)
-
-# x.shape=torch.Size([500, 256, 100]), conditional.shape=torch.Size([500, 28, 100]), diffusion_steps.shape=torch.Size([500, 1])
-output_group_pt = group_pt((h_pt, conditional_pt, diffusion_step_embed_pt))
-print(f"{output_group_pt.shape=}") # torch.Size([500, 256, 100])
-
-group_tf = Residual_group(
-               res_channels=res_channels, 
-               skip_channels=skip_channels, 
-               num_res_layers=num_res_layers, 
-               diffusion_step_embed_dim_in=diffusion_step_embed_dim_in,
-               diffusion_step_embed_dim_mid=diffusion_step_embed_dim_mid,
-               diffusion_step_embed_dim_out=diffusion_step_embed_dim_out,
-               in_channels=in_channels,
-               s4_lmax=s4_lmax,
-               s4_d_state=s4_d_state,
-               s4_dropout=s4_dropout,
-               s4_bidirectional=s4_bidirectional,
-               s4_layernorm=s4_layernorm)
-
-group_tf.trainable = False
-
-output_group_tf = group_tf((h_tf, conditional_tf, diffusion_step_embed_tf))
-print(f"{output_group_tf.shape=}")
-
-# print(output_group_pt)
-# print(output_group_tf)
+    # print(f"{epsilon_theta_pt=}")
+    # print(f"{epsilon_theta_tf=}")
+    # With pseudo inputs, both models produce the same output (all zeros).
+    # yiding: TensorFlow model is much slower.

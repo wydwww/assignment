@@ -36,3 +36,17 @@ def calc_diffusion_step_embedding(diffusion_steps, diffusion_step_embed_dim_in):
     diffusion_step_embed = tf.experimental.numpy.concatenate((tf.experimental.numpy.sin(_embed), tf.experimental.numpy.cos(_embed)), axis=1)
 
     return diffusion_step_embed
+
+def get_mask_rm(sample, k):
+    """Get mask of random points (missing at random) across channels based on k,
+    where k == number of data points. Mask of sample's shape where 0's to be imputed, and 1's to preserved
+    as per ts imputers"""
+
+    mask = tf.ones(sample.shape)
+    length_index = tf.constant(range(mask.shape[0]))  # lenght of series indexes
+    for channel in range(mask.shape[1]):
+        perm = tf.random.shuffle(tf.constant(range(len(length_index))))
+        idx = perm[0:k]
+        mask[:, channel][idx] = 0
+
+    return mask
